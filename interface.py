@@ -3,12 +3,14 @@ from PyQt5.QtWidgets import QApplication, QPushButton, QMainWindow, \
                             QWidget, QDialog, QDialogButtonBox, QGridLayout
 import sys
 from download import Download
+#Main class to deploy the interface
 class MainWindow(QMainWindow):
     def __init__(self, *args, **kwargs):
+        # Initialize the main window
         super(MainWindow, self).__init__(*args, **kwargs)
         self.setWindowTitle("Download Youtube music")
         self.setGeometry(100, 100, 800, 600)
-
+        # Set the window icon
         self.label = QLabel()
         self.label_path_download = QLabel()
         self.label.setText("Introduce la URL del video de YouTube:")
