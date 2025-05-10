@@ -1,8 +1,9 @@
 from PyQt5.QtWidgets import (
     QApplication, QPushButton, QMainWindow, QLabel, QLineEdit, 
-    QVBoxLayout, QHBoxLayout, QWidget, QDialog, QDialogButtonBox, QGridLayout, QProgressBar
+    QVBoxLayout, QHBoxLayout, QWidget, QDialog, QDialogButtonBox, QGridLayout, QProgressBar, QMenuBar, QAction, QFileDialog
 )
 from PyQt5.QtCore import QThread, pyqtSignal
+import os
 import sys
 from download import Download
 
@@ -18,6 +19,7 @@ class DownloadThread(QThread):
         super().__init__()
         self.url = url
         self.output_path = output_path
+        self._is_running = True  # Flag to control the thread's execution
 
     def run(self):
         """
@@ -25,10 +27,69 @@ class DownloadThread(QThread):
         """
         try:
             downloader = Download(self.output_path)
-            downloader.download_audio(self.url)
-            self.status_signal.emit("Download completed successfully!")
+
+            # Check periodically if the thread should stop
+            def progress_hook(d):
+                if not self._is_running:
+                    raise Exception("Download stopped by user.")
+                if d['status'] == 'error':
+                    raise Exception(d.get('error', 'Unknown error occurred.'))
+
+            downloader.download_audio(self.url, progress_hook=progress_hook)
+            if self._is_running:
+                self.status_signal.emit("Download completed successfully!")
         except Exception as e:
             self.error_signal.emit(f"Error: {str(e)}\nIf possible, try with another video.")
+
+    def stop(self):
+        """
+        Stops the thread by setting the _is_running flag to False.
+        """
+        self._is_running = False
+
+
+class SettingsDialog(QDialog):
+    """
+    Dialog for configuring application settings.
+    """
+    def __init__(self, current_path, *args, **kwargs):
+        super(SettingsDialog, self).__init__(*args, **kwargs)
+
+        self.setWindowTitle("Settings")
+        self.current_path = current_path
+
+        # Create widgets
+        self.label = QLabel("Set the default download path:")
+        self.path_input = QLineEdit(self.current_path)
+        self.browse_button = QPushButton("Browse")
+        self.browse_button.clicked.connect(self.browse_path)
+
+        # Create dialog buttons
+        self.buttonBox = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        self.buttonBox.accepted.connect(self.accept)
+        self.buttonBox.rejected.connect(self.reject)
+
+        # Layout
+        layout = QVBoxLayout()
+        layout.addWidget(self.label)
+        layout.addWidget(self.path_input)
+        layout.addWidget(self.browse_button)
+        layout.addWidget(self.buttonBox)
+        self.setLayout(layout)
+
+    def browse_path(self):
+        """
+        Opens a file dialog to select a folder.
+        """
+        path = QFileDialog.getExistingDirectory(self, "Select Download Folder")
+        if path:
+            self.path_input.setText(path)
+
+    def get_path(self):
+        """
+        Returns the selected path.
+        """
+        return self.path_input.text()
 
 
 class MainWindow(QMainWindow):
@@ -37,41 +98,47 @@ class MainWindow(QMainWindow):
     """
     def __init__(self, *args, **kwargs):
         super(MainWindow, self).__init__(*args, **kwargs)
+        self.download_thread = None  # Keep track of the current download thread
+
+        # Default download path
+        self.default_download_path = os.path.join(os.path.expanduser('~'), 'Downloads')
 
         # Set up the main window
         self.setWindowTitle("Download YouTube Music")
         self.setGeometry(100, 100, 800, 600)
 
+        # Create menu bar
+        menu_bar = QMenuBar(self)
+        self.setMenuBar(menu_bar)
+
+        # Add "Settings" menu
+        settings_menu = menu_bar.addMenu("Settings")
+        settings_action = QAction("Configure Download Path", self)
+        settings_action.triggered.connect(self.open_settings)
+        settings_menu.addAction(settings_action)
+
         # Create labels
         self.label = QLabel("Introduce la URL del video de YouTube:")
-        self.label_path_download = QLabel("Introduce la ruta donde se guardan tus descargas:")
         self.status_label = QLabel("")  # Label to show the download status
 
         # Create input fields
         self.input = QLineEdit()
-        self.input_path_download = QLineEdit()
 
         # Create progress bar
         self.progress_bar = QProgressBar()
         self.progress_bar.setValue(0)
 
-        # Create the clear button
-        self.clear_button = QPushButton("Limpiar")
-        self.clear_button.clicked.connect(self.input.clear)
-        self.clear_button.clicked.connect(self.input_path_download.clear)
         # Create the download button
-        self.button = QPushButton("Descargar")
+        self.button = QPushButton("Download")
         self.button.clicked.connect(self.start_download)
 
         # Set up the layout
         layout = QGridLayout()
-        layout.addWidget(self.label_path_download, 0, 0)
-        layout.addWidget(self.input_path_download, 0, 1)
-        layout.addWidget(self.label, 1, 0)
-        layout.addWidget(self.input, 1, 1)
-        layout.addWidget(self.progress_bar, 2, 0, 1, 2)
-        layout.addWidget(self.status_label, 3, 0, 1, 2)
-        layout.addWidget(self.button, 4, 0, 1, 2)  # Span the button across two columns
+        layout.addWidget(self.label, 0, 0)
+        layout.addWidget(self.input, 0, 1)
+        layout.addWidget(self.progress_bar, 1, 0, 1, 2)
+        layout.addWidget(self.status_label, 2, 0, 1, 2)
+        layout.addWidget(self.button, 3, 0, 1, 2)  # Span the button across two columns
 
         # Create a container widget and set the layout
         container = QWidget()
@@ -106,28 +173,36 @@ class MainWindow(QMainWindow):
             }
         """)
 
+    def open_settings(self):
+        """
+        Opens the settings dialog to configure the download path.
+        """
+        dialog = SettingsDialog(self.default_download_path, self)
+        if dialog.exec() == QDialog.Accepted:
+            self.default_download_path = dialog.get_path()
+
     def start_download(self):
         """
         Starts the download process in a separate thread.
         """
         url = self.input.text()
-        output_path = self.input_path_download.text()
 
         # Validate inputs
         if not url:
             self.show_message("Error: Please provide a valid YouTube URL.")
             return
 
-        if not output_path:
-            self.show_message("Error: Please provide a valid download path.")
-            return
+        # Stop the current thread if it is running
+        if self.download_thread and self.download_thread.isRunning():
+            self.download_thread.stop()
+            self.download_thread.wait()  # Wait for the thread to finish
 
         # Reset progress bar and status label
         self.progress_bar.setValue(0)
         self.status_label.setText("Downloading...")
 
-        # Start the download thread
-        self.download_thread = DownloadThread(url, output_path)
+        # Start a new download thread
+        self.download_thread = DownloadThread(url, self.default_download_path)
         self.download_thread.status_signal.connect(self.on_download_complete)
         self.download_thread.error_signal.connect(self.on_download_error)
         self.download_thread.start()
