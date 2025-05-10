@@ -1,9 +1,34 @@
 from PyQt5.QtWidgets import (
     QApplication, QPushButton, QMainWindow, QLabel, QLineEdit, 
-    QVBoxLayout, QHBoxLayout, QWidget, QDialog, QDialogButtonBox, QGridLayout
+    QVBoxLayout, QHBoxLayout, QWidget, QDialog, QDialogButtonBox, QGridLayout, QProgressBar
 )
+from PyQt5.QtCore import QThread, pyqtSignal
 import sys
 from download import Download
+
+
+class DownloadThread(QThread):
+    """
+    Thread to handle the download process.
+    """
+    status_signal = pyqtSignal(str)  # Signal to update the status
+    error_signal = pyqtSignal(str)   # Signal to handle errors
+
+    def __init__(self, url, output_path):
+        super().__init__()
+        self.url = url
+        self.output_path = output_path
+
+    def run(self):
+        """
+        Executes the download process in a separate thread.
+        """
+        try:
+            downloader = Download(self.output_path)
+            downloader.download_audio(self.url)
+            self.status_signal.emit("Download completed successfully!")
+        except Exception as e:
+            self.error_signal.emit(f"Error: {str(e)}\nIf possible, try with another video.")
 
 
 class MainWindow(QMainWindow):
@@ -20,14 +45,23 @@ class MainWindow(QMainWindow):
         # Create labels
         self.label = QLabel("Introduce la URL del video de YouTube:")
         self.label_path_download = QLabel("Introduce la ruta donde se guardan tus descargas:")
+        self.status_label = QLabel("")  # Label to show the download status
 
         # Create input fields
         self.input = QLineEdit()
         self.input_path_download = QLineEdit()
 
+        # Create progress bar
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setValue(0)
+
+        # Create the clear button
+        self.clear_button = QPushButton("Limpiar")
+        self.clear_button.clicked.connect(self.input.clear)
+        self.clear_button.clicked.connect(self.input_path_download.clear)
         # Create the download button
-        self.button = QPushButton("Download")
-        self.button.clicked.connect(self.download_audio)
+        self.button = QPushButton("Descargar")
+        self.button.clicked.connect(self.start_download)
 
         # Set up the layout
         layout = QGridLayout()
@@ -35,7 +69,9 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.input_path_download, 0, 1)
         layout.addWidget(self.label, 1, 0)
         layout.addWidget(self.input, 1, 1)
-        layout.addWidget(self.button, 2, 0, 1, 2)  # Span the button across two columns
+        layout.addWidget(self.progress_bar, 2, 0, 1, 2)
+        layout.addWidget(self.status_label, 3, 0, 1, 2)
+        layout.addWidget(self.button, 4, 0, 1, 2)  # Span the button across two columns
 
         # Create a container widget and set the layout
         container = QWidget()
@@ -64,34 +100,57 @@ class MainWindow(QMainWindow):
                 border: 1px solid #ccc;
                 border-radius: 5px;
             }
+            QProgressBar {
+                font-size: 14px;
+                text-align: center;
+            }
         """)
 
-    def download_audio(self):
+    def start_download(self):
         """
-        Handles the download process when the "Download" button is clicked.
+        Starts the download process in a separate thread.
         """
-        output_path = self.input_path_download.text()
         url = self.input.text()
+        output_path = self.input_path_download.text()
 
         # Validate inputs
         if not url:
-            dlg = CustomDialog("Error: Please provide a valid YouTube URL.", self)
-            dlg.exec()
+            self.show_message("Error: Please provide a valid YouTube URL.")
             return
 
         if not output_path:
-            dlg = CustomDialog("Error: Please provide a valid download path.", self)
-            dlg.exec()
+            self.show_message("Error: Please provide a valid download path.")
             return
 
-        # Attempt to download the audio
-        try:
-            downloader = Download(output_path)
-            downloader.download_audio(url)
-            dlg = CustomDialog("Download completed successfully!", self)
-        except Exception as e:
-            dlg = CustomDialog(f"Error: {str(e)}\nIf possible, try with another video.", self)
+        # Reset progress bar and status label
+        self.progress_bar.setValue(0)
+        self.status_label.setText("Downloading...")
 
+        # Start the download thread
+        self.download_thread = DownloadThread(url, output_path)
+        self.download_thread.status_signal.connect(self.on_download_complete)
+        self.download_thread.error_signal.connect(self.on_download_error)
+        self.download_thread.start()
+
+    def on_download_complete(self, message):
+        """
+        Handles the completion of the download.
+        """
+        self.progress_bar.setValue(100)
+        self.status_label.setText(message)
+
+    def on_download_error(self, error_message):
+        """
+        Handles errors during the download process.
+        """
+        self.progress_bar.setValue(0)
+        self.status_label.setText(error_message)
+
+    def show_message(self, message):
+        """
+        Displays a message in a dialog box.
+        """
+        dlg = CustomDialog(message, self)
         dlg.exec()
 
 
@@ -106,10 +165,9 @@ class CustomDialog(QDialog):
         self.setWindowTitle("Important!")
 
         # Create dialog buttons
-        QBtn = QDialogButtonBox.Ok | QDialogButtonBox.Cancel
+        QBtn = QDialogButtonBox.Ok
         self.buttonBox = QDialogButtonBox(QBtn)
         self.buttonBox.accepted.connect(self.accept)
-        self.buttonBox.rejected.connect(self.reject)
 
         # Set up the layout
         layout = QVBoxLayout()
